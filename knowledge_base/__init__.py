@@ -4,6 +4,7 @@ from .manager import (
     create_entry, update_entry, get_entry, delete_entry,
     list_entries, search_entries, get_recent_entries,
     import_from_summary,
+    add_attachment, get_attachments, get_attachment, delete_attachment,
 )
 from .agents import KnowledgeIntelligenceAgent
 
@@ -13,5 +14,6 @@ __all__ = [
     "create_entry", "update_entry", "get_entry", "delete_entry",
     "list_entries", "search_entries", "get_recent_entries",
     "import_from_summary",
+    "add_attachment", "get_attachments", "get_attachment", "delete_attachment",
     "KnowledgeIntelligenceAgent",
 ]

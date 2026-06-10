@@ -13,7 +13,11 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+from typing import Generator
+
 from summary_system.llm_client import LLMConfig, load_env_file
+
+from .llm_streaming import StreamingDelta, stream_chat as _stream_chat
 
 
 class AgentLLMClient:
@@ -77,6 +81,18 @@ class AgentLLMClient:
             "content": message.get("content"),
             "tool_calls": message.get("tool_calls"),
         }
+
+    def stream_chat(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float | None = None,
+    ) -> Generator[StreamingDelta, None, None]:
+        """Stream chat completions, yielding token-by-token deltas.
+
+        Handles text tokens and tool_call accumulation transparently.
+        """
+        yield from _stream_chat(self.config, messages, tools, temperature)
 
     def simple_chat(self, system_prompt: str, user_prompt: str) -> str:
         """Single-turn chat without tools, returns content string."""

@@ -123,6 +123,20 @@ def cancel(approval_id: int, user_id: int) -> bool:
     return True
 
 
+def delete_approval(approval_id: int, user_id: int) -> bool:
+    """Delete an approval record. Only the applicant can delete their own."""
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM approvals WHERE id = ? AND applicant_id = ?",
+                       (approval_id, user_id)).fetchone()
+    if not row:
+        conn.close()
+        return False
+    conn.execute("DELETE FROM approvals WHERE id = ?", (approval_id,))
+    conn.commit()
+    conn.close()
+    return True
+
+
 def get_approval(approval_id: int) -> dict[str, Any] | None:
     conn = get_connection()
     row = conn.execute(
@@ -153,6 +167,7 @@ def list_approvals(
     approver_id: int | None = None,
     status: str = "",
     approval_type: str = "",
+    involved_user_id: int | None = None,
 ) -> dict[str, Any]:
     conn = get_connection()
     where = []
@@ -164,6 +179,11 @@ def list_approvals(
     if approver_id is not None:
         where.append("a.current_approver_id = ?")
         params.append(approver_id)
+    if involved_user_id is not None:
+        # Match user as applicant OR ever appeared in approval_chain JSON
+        where.append("(a.applicant_id = ? OR a.approval_chain LIKE ?)")
+        params.append(involved_user_id)
+        params.append(f"%{involved_user_id}%")
     if status:
         where.append("a.status = ?")
         params.append(status)

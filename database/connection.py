@@ -78,6 +78,17 @@ def init_db() -> None:
             FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
         );
 
+        CREATE TABLE IF NOT EXISTS kb_attachments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entry_id INTEGER NOT NULL,
+            filename TEXT NOT NULL,
+            original_name TEXT NOT NULL,
+            file_size INTEGER DEFAULT 0,
+            mime_type TEXT DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (entry_id) REFERENCES kb_entries(id) ON DELETE CASCADE
+        );
+
         CREATE VIRTUAL TABLE IF NOT EXISTS kb_entries_fts USING fts5(
             title, plain_text, content='kb_entries', content_rowid='id'
         );

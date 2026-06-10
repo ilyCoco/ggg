@@ -2,11 +2,112 @@
 
 from __future__ import annotations
 
+import os
 import streamlit as st
+
+FILE_ICONS = {
+    "pdf": "📕", "doc": "📘", "docx": "📘", "xls": "📊", "xlsx": "📊",
+    "ppt": "📽️", "pptx": "📽️", "txt": "📄", "md": "📝", "csv": "📊",
+    "mp3": "🎵", "wav": "🎵", "m4a": "🎵", "mp4": "🎬", "zip": "📦",
+    "png": "🖼️", "jpg": "🖼️", "jpeg": "🖼️", "gif": "🖼️", "webp": "🖼️", "svg": "🖼️",
+}
 
 if "user" not in st.session_state:
     st.warning("请先在首页登录")
     st.stop()
+
+
+def _render_attachment(att: dict) -> None:
+    """Render a single attachment with preview based on mime type."""
+    from pathlib import Path
+    from knowledge_base.manager import UPLOAD_DIR
+
+    att_id = att["id"]
+    entry_id = att["entry_id"]
+    original = att.get("original_name", att["filename"])
+    mime = att.get("mime_type", "")
+    size_kb = att.get("file_size", 0) / 1024
+    file_path = os.path.join(UPLOAD_DIR, str(entry_id), att["filename"])
+
+    ext = Path(original).suffix.lower()
+    icon = FILE_ICONS.get(ext.lstrip("."), "📎")
+
+    col1, col2, col3 = st.columns([0.06, 1, 0.2])
+    with col1:
+        st.markdown(f"<span style='font-size:1.5em'>{icon}</span>", unsafe_allow_html=True)
+    with col2:
+        st.markdown(f"**{original}** · {size_kb:.1f} KB")
+    with col3:
+        if st.button("🗑️", key=f"delatt_{att_id}", help=f"删除 {original}"):
+            delete_attachment(att_id)
+            st.rerun()
+
+    # ── Preview ──
+    if mime.startswith("image/"):
+        if os.path.isfile(file_path):
+            with open(file_path, "rb") as f:
+                st.image(f.read(), caption=original)
+
+    elif mime == "application/pdf":
+        if os.path.isfile(file_path):
+            try:
+                import fitz  # PyMuPDF
+                import io
+                doc = fitz.open(file_path)
+                total_pages = len(doc)
+                preview_pages = min(total_pages, 20)
+                st.caption(f"📄 PDF 预览 · {total_pages} 页")
+                tabs = st.tabs([f"第 {i+1} 页" for i in range(preview_pages)])
+                for i in range(preview_pages):
+                    page = doc[i]
+                    pix = page.get_pixmap(dpi=120)
+                    img_bytes = io.BytesIO(pix.tobytes("png"))
+                    with tabs[i]:
+                        st.image(img_bytes)
+                doc.close()
+                if total_pages > 20:
+                    st.caption(f"... 共 {total_pages} 页，仅预览前 20 页")
+            except Exception as exc:
+                st.caption(f"⚠️ PDF 预览失败: {exc}")
+
+    elif mime in ("application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"):
+        try:
+            import docx
+            doc = docx.Document(file_path)
+            lines = [p.text for p in doc.paragraphs if p.text.strip()]
+            preview = "\n\n".join(lines[:30])
+            if preview:
+                st.text_area("文本预览", preview, height=250, disabled=True, key=f"doc_preview_{att_id}")
+            else:
+                st.caption("（文档内容为空或无法提取文本）")
+        except Exception:
+            st.caption("📥 点击下载预览")
+
+    elif mime.startswith("text/"):
+        if os.path.isfile(file_path):
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    text = f.read()
+                st.text_area("文本预览", text[:3000], height=250, disabled=True, key=f"txt_preview_{att_id}")
+            except Exception:
+                st.caption("（无法读取文件内容）")
+
+    else:
+        st.caption(f"📥 下载: {original}")
+
+    if os.path.isfile(file_path):
+        with open(file_path, "rb") as f:
+            file_bytes = f.read()
+        st.download_button(
+            label=f"💾 下载 {original}",
+            data=file_bytes,
+            file_name=original,
+            mime=mime or "application/octet-stream",
+            key=f"dl_{att_id}",
+        )
+
+    st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
+
 
 from utils import inject_css, badge, ai_insight
 inject_css()
@@ -14,7 +115,8 @@ inject_css()
 from knowledge_base import (
     get_categories, create_category, update_category, delete_category,
     get_tags, create_tag, delete_tag,
-    list_entries, search_entries, get_entry, update_entry, delete_entry,
+    create_entry, list_entries, search_entries, get_entry, update_entry, delete_entry,
+    add_attachment, get_attachments, get_attachment, delete_attachment,
     KnowledgeIntelligenceAgent,
 )
 from summary_system.llm_client import LLMClient
@@ -36,6 +138,48 @@ with st.sidebar:
 
 # ── Browse & Search ──
 if tab == "浏览搜索":
+    # ── New entry quick-create ──
+    with st.expander("➕ 新建知识条目", expanded=False):
+        nc1, nc2 = st.columns([2, 1])
+        with nc1:
+            new_title = st.text_input("标题", placeholder="条目标题", key="new_kb_title")
+            new_content = st.text_area("内容（Markdown）", placeholder="支持 Markdown 格式...", height=150, key="new_kb_content")
+        with nc2:
+            cats_all = get_categories()
+            cat_map = {c["name"]: c["id"] for c in cats_all}
+            cat_map["（不分类）"] = None
+            new_cat = st.selectbox("分类", list(cat_map.keys()), key="new_kb_cat")
+            is_public = st.checkbox("公开", value=False, key="new_kb_public")
+            # File upload directly in create form
+            new_files = st.file_uploader(
+                "📎 附件",
+                type=["pdf", "png", "jpg", "jpeg", "gif", "webp", "svg",
+                      "doc", "docx", "xls", "xlsx", "ppt", "pptx",
+                      "txt", "md", "csv", "mp3", "wav", "m4a", "mp4", "zip"],
+                accept_multiple_files=True,
+                key="new_kb_files",
+            )
+        if st.button("创建条目", type="primary", key="create_kb_btn", use_container_width=True):
+            if new_title.strip():
+                eid = create_entry(
+                    title=new_title.strip(),
+                    content=new_content,
+                    created_by=user["id"],
+                    category_id=cat_map[new_cat],
+                    is_public=is_public,
+                )
+                if new_files:
+                    for f in new_files:
+                        add_attachment(eid, f)
+                # Clear form state after creation
+                for k in ("new_kb_title", "new_kb_content", "new_kb_cat", "new_kb_public", "new_kb_files"):
+                    st.session_state.pop(k, None)
+                st.success(f"已创建「{new_title}」" + (f"，含 {len(new_files)} 个附件" if new_files else ""))
+                st.rerun()
+            else:
+                st.error("请输入标题")
+
+    # ── Search bar ──
     col1, col2, col3 = st.columns([2, 1, 1])
     with col1:
         search_query = st.text_input("搜索知识库", placeholder="输入关键词搜索...")
@@ -61,7 +205,7 @@ if tab == "浏览搜索":
     st.caption(f"共 {result['total']} 条结果，第 {result['page']}/{result['total_pages']} 页")
 
     if not result["entries"]:
-        st.info("暂无知识条目。从语音总结页面生成总结后可导入知识库。")
+        st.info("暂无知识条目。点上方「➕ 新建知识条目」创建，或从语音总结页面导入。")
     else:
         for entry in result["entries"]:
             cat_icon = ""
@@ -71,14 +215,30 @@ if tab == "浏览搜索":
                     cat_icon = c.get("icon", "")
                     cat_name = c["name"]
                     break
-            with st.expander(f"{cat_icon} {entry['title']} — {entry.get('author_name', '')} · {entry['created_at'][:10]}"):
+
+            # Attachment count badge
+            atts = get_attachments(entry["id"])
+            attach_badge = f" 📎{len(atts)}" if atts else ""
+
+            with st.expander(f"{cat_icon} {entry['title']}{attach_badge} — {entry.get('author_name', '')} · {entry['created_at'][:10]}"):
                 st.caption(f"分类：{cat_name or '未分类'} | 场景：{entry['scene_type']} | 浏览：{entry['view_count']}")
                 if entry.get("tags"):
                     tag_names = [t["name"] for t in entry["tags"]]
                     st.caption(f"标签：{', '.join(tag_names)}")
+
+                # Show attachments as clickable chips
+                if atts:
+                    st.markdown("**📎 附件：**")
+                    att_cols = st.columns(min(len(atts), 4))
+                    for i, a in enumerate(atts):
+                        with att_cols[i % 4]:
+                            ext = os.path.splitext(a["original_name"])[1].lower().lstrip(".")
+                            icon = FILE_ICONS.get(ext, "📎")
+                            st.caption(f"{icon} {a['original_name']} ({a['file_size']/1024:.0f}KB)")
+
                 st.markdown(entry["content"][:3000] + ("..." if len(entry.get("content", "")) > 3000 else ""))
 
-                c1, c2, c3 = st.columns(3)
+                c1, c2, c3, c4 = st.columns(4)
                 with c1:
                     if st.button("查看详情", key=f"view_{entry['id']}"):
                         st.session_state["view_entry"] = entry["id"]
@@ -103,6 +263,28 @@ if tab == "浏览搜索":
             st.subheader(f"📄 {entry['title']}")
             st.caption(f"作者：{entry.get('author_name', '')} | 创建：{entry['created_at']} | 浏览：{entry['view_count']}")
             st.markdown(entry["content"])
+
+            # ── Attachments ──
+            attachments = get_attachments(entry["id"])
+            if attachments:
+                st.divider()
+                st.caption(f"📎 附件 ({len(attachments)})")
+                for att in attachments:
+                    _render_attachment(att)
+            # Upload new attachment
+            with st.expander("📤 上传附件"):
+                uploaded = st.file_uploader(
+                    "选择文件",
+                    type=["pdf", "png", "jpg", "jpeg", "gif", "webp", "svg",
+                          "doc", "docx", "xls", "xlsx", "ppt", "pptx",
+                          "txt", "md", "csv", "mp3", "wav", "m4a", "mp4", "zip"],
+                    key=f"upload_{entry['id']}",
+                    label_visibility="collapsed",
+                )
+                if uploaded:
+                    add_attachment(entry["id"], uploaded)
+                    st.success(f"已上传: {uploaded.name}")
+                    st.rerun()
 
             # AI features for this entry
             st.divider()
@@ -172,6 +354,16 @@ if tab == "浏览搜索":
             )
             selected_tag_ids = [t["id"] for t in all_tags if t["name"] in selected_tags]
 
+            # Upload new attachment
+            edit_files = st.file_uploader(
+                "📎 添加附件",
+                type=["pdf", "png", "jpg", "jpeg", "gif", "webp", "svg",
+                      "doc", "docx", "xls", "xlsx", "ppt", "pptx",
+                      "txt", "md", "csv", "mp3", "wav", "m4a", "mp4", "zip"],
+                accept_multiple_files=True,
+                key=f"edit_files_{entry['id']}",
+            )
+
             c1, c2 = st.columns(2)
             with c1:
                 if st.button("保存修改", type="primary", use_container_width=True):
@@ -184,7 +376,10 @@ if tab == "浏览搜索":
                         tag_ids=selected_tag_ids,
                         is_public=new_public,
                     )
-                    st.success("已更新")
+                    if edit_files:
+                        for f in edit_files:
+                            add_attachment(entry["id"], f)
+                    st.success("已更新" + (f"，含 {len(edit_files)} 个新附件" if edit_files else ""))
                     st.session_state.pop("edit_entry")
                     st.rerun()
             with c2:
@@ -353,3 +548,4 @@ elif tab == "标签管理":
                         st.rerun()
     else:
         st.info("暂无标签")
+

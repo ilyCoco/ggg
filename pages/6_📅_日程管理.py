@@ -1,4 +1,4 @@
-"""Calendar page — month view, event management, AI scheduling, weekly report."""
+"""Calendar page — month view with clickable days, event CRUD, AI scheduling."""
 
 from __future__ import annotations
 
@@ -35,6 +35,8 @@ today = date.today()
 if "cal_year" not in st.session_state:
     st.session_state["cal_year"] = today.year
     st.session_state["cal_month"] = today.month
+if "selected_day" not in st.session_state:
+    st.session_state["selected_day"] = today
 
 c1, c2, c3, c4, c5 = st.columns([1, 1, 2, 1, 1])
 with c1:
@@ -49,6 +51,7 @@ with c2:
     if st.button("本月"):
         st.session_state["cal_year"] = today.year
         st.session_state["cal_month"] = today.month
+        st.session_state["selected_day"] = today
         st.rerun()
 with c3:
     st.markdown(f"### {st.session_state['cal_year']} 年 {st.session_state['cal_month']} 月")
@@ -63,13 +66,13 @@ with c4:
 
 year = st.session_state["cal_year"]
 month = st.session_state["cal_month"]
+selected = st.session_state["selected_day"]
 
-# ── Calendar grid ──
+# ── Calendar grid with clickable day buttons ──
 events_by_day = get_events_for_month(year, month, user["id"])
 cal = calendar.Calendar(firstweekday=0)
 weeks = list(cal.monthdatescalendar(year, month))
 
-# Header
 day_names = ["一", "二", "三", "四", "五", "六", "日"]
 cols = st.columns(7)
 for i, dn in enumerate(day_names):
@@ -80,48 +83,88 @@ for week in weeks:
     for i, d in enumerate(week):
         with cols[i]:
             if d.month != month:
-                st.markdown(f"<span style='color:#ccc'>{d.day}</span>", unsafe_allow_html=True)
+                st.button(f"{d.day}", key=f"day_{d}", disabled=True, use_container_width=True)
             else:
                 is_today = d == today
-                bg = "#FFF3CD" if is_today else "transparent"
+                is_selected = d == selected
                 day_events = events_by_day.get(d.day, [])
-                dots = ""
-                for ev in day_events:
-                    color = {"meeting": "#3B82F6", "task_deadline": "#EF4444", "reminder": "#F59E0B", "personal": "#10B981"}.get(ev.get("event_type", "personal"), "#6B7280")
-                    dots += f"<span style='display:inline-block;width:6px;height:6px;border-radius:50%;background:{color};margin:1px'></span>"
-
-                st.markdown(
-                    f"""<div style='background:{bg};padding:4px;border-radius:4px;text-align:center;cursor:pointer'
-                        onclick=''>
-                        <strong>{d.day}</strong><br>{dots}
-                        </div>""",
-                    unsafe_allow_html=True,
-                )
+                label = f"{d.day}"
                 if day_events:
-                    for ev in day_events[:2]:
-                        st.caption(f"· {ev['title'][:8]}")
+                    label += f" ({len(day_events)})"
+                if is_today:
+                    label = f"📌{label}"
+                btn_type = "primary" if is_selected else ("secondary" if is_today else "secondary")
+                if st.button(label, key=f"day_{year}_{month}_{d.day}",
+                             use_container_width=True, type=btn_type):
+                    st.session_state["selected_day"] = d
+                    st.rerun()
 
-# ── Selected day events + Create ──
 st.divider()
 left, right = st.columns([1, 1])
 
+# ═══════════════════════════════════════════════════
+#  LEFT: Selected day events (clickable to edit/delete)
+# ═══════════════════════════════════════════════════
 with left:
-    st.subheader("今日日程")
-    today_events = events_by_day.get(today.day, [])
-    if today_events:
-        for ev in today_events:
-            with st.expander(f"{ev['title']} — {ev.get('start_time','')[11:16]}"):
-                st.caption(f"类型：{ev['event_type']} | 地点：{ev.get('location') or '-'}")
-                if ev.get("description"):
-                    st.text(ev["description"])
+    sel_events = events_by_day.get(selected.day, [])
+    if selected == today:
+        st.subheader(f"📌 今日日程 ({selected})")
     else:
-        st.caption("今日暂无日程")
+        st.subheader(f"📅 {selected} 日程")
 
-    st.subheader("📅 近期日程")
-    upcoming = get_upcoming_events(user["id"], limit=10)
-    for ev in upcoming:
-        st.caption(f"{ev['start_time'][:16]} — {ev['title']}")
+    if sel_events:
+        for ev in sel_events:
+            ev_id = ev["id"]
+            # Skip if editing this event
+            if st.session_state.get("edit_event_id") == ev_id:
+                with st.container():
+                    st.caption(f"✏️ 编辑: {ev['title']}")
+                    new_title = st.text_input("标题", value=ev["title"], key=f"edt_title_{ev_id}")
+                    new_desc = st.text_area("描述", value=ev.get("description", ""), key=f"edt_desc_{ev_id}")
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        if st.button("💾 保存", key=f"save_ev_{ev_id}", use_container_width=True):
+                            update_event(ev_id, title=new_title, description=new_desc)
+                            st.success("已更新")
+                            st.session_state.pop("edit_event_id", None)
+                            st.rerun()
+                    with c2:
+                        if st.button("取消", key=f"cancel_ev_{ev_id}", use_container_width=True):
+                            st.session_state.pop("edit_event_id", None)
+                            st.rerun()
+            else:
+                with st.expander(f"{ev['title']} — {ev.get('start_time','')[11:16]}"):
+                    st.caption(f"类型：{ev.get('event_type','')} | 地点：{ev.get('location') or '-'}")
+                    if ev.get("description"):
+                        st.text(ev["description"])
+                    if ev.get("start_time"):
+                        st.caption(f"时间：{ev['start_time'][:16]} ~ {ev.get('end_time','')[:16]}")
+                    c1, c2, c3 = st.columns(3)
+                    with c1:
+                        if st.button("✏️ 编辑", key=f"edit_ev_{ev_id}", use_container_width=True):
+                            st.session_state["edit_event_id"] = ev_id
+                            st.rerun()
+                    with c2:
+                        if st.button("🗑️ 删除", key=f"del_ev_{ev_id}", use_container_width=True):
+                            delete_event(ev_id)
+                            st.success(f"已删除「{ev['title']}」")
+                            st.rerun()
+    else:
+        st.info(f"{selected} 暂无日程")
 
+    # Quick upcoming events
+    st.markdown("---")
+    st.caption("📅 近期日程")
+    upcoming = get_upcoming_events(user["id"], limit=6)
+    if upcoming:
+        for ev in upcoming:
+            st.caption(f"{ev['start_time'][5:16]} — {ev['title']}")
+    else:
+        st.caption("暂无近期日程")
+
+# ═══════════════════════════════════════════════════
+#  RIGHT: Create form
+# ═══════════════════════════════════════════════════
 with right:
     st.subheader("➕ 创建日程")
     with st.form("create_event_form"):
@@ -129,7 +172,7 @@ with right:
         ev_desc = st.text_area("描述")
         c1, c2 = st.columns(2)
         with c1:
-            ev_date = st.date_input("日期", value=today)
+            ev_date = st.date_input("日期", value=selected)
             ev_time = st.time_input("时间", value=datetime.strptime("09:00", "%H:%M").time())
         with c2:
             ev_type = st.selectbox("类型", ["meeting", "task_deadline", "reminder", "personal"],
@@ -164,7 +207,9 @@ with right:
                                    location=ev_location, description=ev_desc, attendees=aid_list)
                 st.success(f"日程已创建（ID: {eid}）")
 
-# ── Weekly Report ──
+# ═══════════════════════════════════════════════════
+#  Weekly Report
+# ═══════════════════════════════════════════════════
 st.divider()
 st.subheader("📊 周报生成")
 if st.button("🤖 生成本周周报", type="primary"):

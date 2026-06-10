@@ -48,6 +48,12 @@ def _get_events_by_range(start_date: str, end_date: str, user_id: int = 0, **_: 
     return json.dumps({"events": brief, "count": len(brief)}, ensure_ascii=False)
 
 
+def _delete_event(event_id: int, **_: Any) -> str:
+    from scheduler import delete_event
+    ok = delete_event(event_id)
+    return json.dumps({"success": ok, "message": f"日程 {event_id} 已删除" if ok else "删除失败"}, ensure_ascii=False)
+
+
 def register_calendar_tools() -> list[ToolDef]:
     return [
         ToolDef(
@@ -97,5 +103,18 @@ def register_calendar_tools() -> list[ToolDef]:
             handler=_get_events_by_range,
             domain="calendar",
             requires_user_id=True,
+        ),
+        ToolDef(
+            name="delete_event",
+            description="删除一个日程或会议。",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "event_id": {"type": "integer", "description": "日程ID"},
+                },
+                "required": ["event_id"],
+            },
+            handler=_delete_event,
+            domain="calendar",
         ),
     ]

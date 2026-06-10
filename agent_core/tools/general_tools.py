@@ -81,6 +81,12 @@ def _list_approvals(user_id: int = 0, role: str = "approver", **_: Any) -> str:
     return json.dumps({"approvals": brief, "count": len(brief)}, ensure_ascii=False)
 
 
+def _delete_approval(approval_id: int, user_id: int = 0, **_: Any) -> str:
+    from approvals import delete_approval
+    ok = delete_approval(approval_id, user_id)
+    return json.dumps({"success": ok, "message": f"审批 {approval_id} 已删除" if ok else "删除失败"}, ensure_ascii=False)
+
+
 # ── User Tools ──
 
 def _list_users(**_: Any) -> str:
@@ -216,6 +222,20 @@ def register_approval_tools() -> list[ToolDef]:
                 },
             },
             handler=_list_approvals,
+            domain="approval",
+            requires_user_id=True,
+        ),
+        ToolDef(
+            name="delete_approval",
+            description="删除一个审批申请。只能删除自己的申请。",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "approval_id": {"type": "integer", "description": "审批ID"},
+                },
+                "required": ["approval_id"],
+            },
+            handler=_delete_approval,
             domain="approval",
             requires_user_id=True,
         ),

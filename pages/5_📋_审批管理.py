@@ -12,7 +12,7 @@ from utils import inject_css
 inject_css()
 
 from approvals import (
-    create_approval, approve, reject, cancel, get_approval,
+    create_approval, approve, reject, cancel, delete_approval, get_approval,
     list_approvals, parse_approval_chain, ApprovalReviewAgent,
 )
 from notifications import mark_read_by_type
@@ -47,6 +47,11 @@ with tab1:
             if a["status"] == "pending":
                 if st.button("取消申请", key=f"cancel_{a['id']}"):
                     cancel(a["id"], user["id"])
+                    st.rerun()
+            elif a["status"] in ("approved", "rejected", "cancelled"):
+                if st.button("🗑️ 删除", key=f"del_appr_{a['id']}"):
+                    delete_approval(a["id"], user["id"])
+                    st.success("已删除")
                     st.rerun()
 
 # ── Pending my approval ──
@@ -116,9 +121,17 @@ with tab3:
 
 # ── History ──
 with tab4:
-    result = list_approvals(status=st.selectbox("状态", ["全部", "approved", "rejected", "cancelled"],
-                                                 format_func=lambda x:{"全部":"","approved":"已通过","rejected":"已驳回","cancelled":"已取消"}.get(x,""),
-                                                 key="hist_status"))
+    hist_role = st.selectbox("查看", ["我的申请", "我审批的"], key="hist_role")
+    hist_status = st.selectbox("状态", ["全部", "approved", "rejected", "cancelled"],
+                               format_func=lambda x:{"全部":"","approved":"已通过","rejected":"已驳回","cancelled":"已取消"}.get(x,""),
+                               key="hist_status")
+
+    if hist_role == "我的申请":
+        result = list_approvals(applicant_id=user["id"], status=hist_status)
+    else:
+        result = list_approvals(involved_user_id=user["id"], status=hist_status)
+
     st.caption(f"共 {result['total']} 条")
     for a in result["approvals"]:
-        st.caption(f"{'✅' if a['status']=='approved' else '❌'} [{a['type']}] {a['title']} — {a.get('applicant_name','')} · {a['created_at'][:10]}")
+        role_label = "📤 申请" if a.get("applicant_id") == user["id"] else "📥 审批"
+        st.caption(f"{'✅' if a['status']=='approved' else '❌'} [{a['type']}] {a['title']} — {a.get('applicant_name','')} · {a['created_at'][:10]} {role_label}")

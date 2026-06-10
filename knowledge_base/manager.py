@@ -273,7 +273,8 @@ def search_entries(
     page_size: int = 20,
 ) -> dict[str, Any]:
     conn = get_connection()
-    try:
+
+    def _fts_search():
         count_row = conn.execute(
             "SELECT COUNT(*) FROM kb_entries_fts WHERE kb_entries_fts MATCH ?",
             (query,),
@@ -287,8 +288,9 @@ def search_entries(
             "WHERE kb_entries_fts MATCH ? ORDER BY rank LIMIT ? OFFSET ?",
             (query, page_size, offset),
         ).fetchall()
-    except Exception:
-        # Fallback to LIKE search if FTS query is invalid
+        return total, rows
+
+    def _like_search():
         like = f"%{query}%"
         count_row = conn.execute(
             "SELECT COUNT(*) FROM kb_entries WHERE title LIKE ? OR plain_text LIKE ?",
@@ -302,6 +304,16 @@ def search_entries(
             "WHERE e.title LIKE ? OR e.plain_text LIKE ? ORDER BY e.created_at DESC LIMIT ? OFFSET ?",
             (like, like, page_size, offset),
         ).fetchall()
+        return total, rows
+
+    # Try FTS5 first; fall back to LIKE on error or empty results
+    try:
+        total, rows = _fts_search()
+        if total == 0:
+            total, rows = _like_search()
+    except Exception:
+        total, rows = _like_search()
+
     conn.close()
 
     entries = []
@@ -356,6 +368,123 @@ def import_from_summary(
         summary_json=_json.dumps(data, ensure_ascii=False),
         is_public=False,
     )
+
+
+# ── Attachments ──
+
+import os
+import shutil
+import uuid
+
+UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads", "kb")
+
+
+def _ensure_upload_dir(entry_id: int) -> str:
+    d = os.path.join(UPLOAD_DIR, str(entry_id))
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def add_attachment(entry_id: int, uploaded_file) -> dict[str, Any] | None:
+    """Save an uploaded file and record it in the database."""
+    original_name = uploaded_file.name
+    ext = os.path.splitext(original_name)[1] or ""
+    stored_name = f"{uuid.uuid4().hex}{ext}"
+    save_dir = _ensure_upload_dir(entry_id)
+    save_path = os.path.join(save_dir, stored_name)
+
+    with open(save_path, "wb") as f:
+        f.write(uploaded_file.getbuffer())
+
+    file_size = os.path.getsize(save_path)
+    mime = _guess_mime(ext, original_name)
+
+    conn = get_connection()
+    cur = conn.execute(
+        "INSERT INTO kb_attachments (entry_id, filename, original_name, file_size, mime_type) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (entry_id, stored_name, original_name, file_size, mime),
+    )
+    att_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+
+    return {
+        "id": att_id,
+        "entry_id": entry_id,
+        "filename": stored_name,
+        "original_name": original_name,
+        "file_size": file_size,
+        "mime_type": mime,
+        "path": save_path,
+    }
+
+
+def get_attachments(entry_id: int) -> list[dict[str, Any]]:
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM kb_attachments WHERE entry_id = ? ORDER BY created_at DESC",
+        (entry_id,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_attachment(att_id: int) -> dict[str, Any] | None:
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM kb_attachments WHERE id = ?", (att_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def delete_attachment(att_id: int) -> bool:
+    """Delete attachment record and file."""
+    att = get_attachment(att_id)
+    if not att:
+        return False
+
+    file_path = os.path.join(UPLOAD_DIR, str(att["entry_id"]), att["filename"])
+    if os.path.isfile(file_path):
+        os.remove(file_path)
+
+    conn = get_connection()
+    conn.execute("DELETE FROM kb_attachments WHERE id = ?", (att_id,))
+    conn.commit()
+    conn.close()
+
+    # Clean up empty dir
+    entry_dir = os.path.join(UPLOAD_DIR, str(att["entry_id"]))
+    if os.path.isdir(entry_dir) and not os.listdir(entry_dir):
+        os.rmdir(entry_dir)
+
+    return True
+
+
+def _guess_mime(ext: str, filename: str) -> str:
+    ext = ext.lower()
+    return {
+        ".pdf": "application/pdf",
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+        ".svg": "image/svg+xml",
+        ".doc": "application/msword",
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".xls": "application/vnd.ms-excel",
+        ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ".ppt": "application/vnd.ms-powerpoint",
+        ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        ".txt": "text/plain",
+        ".md": "text/markdown",
+        ".csv": "text/csv",
+        ".mp3": "audio/mpeg",
+        ".wav": "audio/wav",
+        ".m4a": "audio/mp4",
+        ".mp4": "video/mp4",
+        ".zip": "application/zip",
+    }.get(ext, "application/octet-stream")
 
 
 # ── Helpers ──

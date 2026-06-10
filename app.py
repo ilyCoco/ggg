@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 import streamlit as st
 from database import init_db
 from utils import inject_css, metric_card, badge, ai_insight, section_header, nav_links, user_role_badge
@@ -82,6 +84,7 @@ def login_page() -> None:
 def dashboard_page() -> None:
     user = st.session_state["user"]
 
+    from database import get_connection
     from knowledge_base import get_recent_entries, get_categories
     from tasks import get_tasks_by_status
     from notifications import get_unread_count as get_unread_notif_count, list_notifications
@@ -93,6 +96,13 @@ def dashboard_page() -> None:
     llm = LLMClient.from_env()
     pa_agent = PersonalAssistantAgent(llm)
     nq_agent = NaturalQueryAgent(llm)
+
+    # ── Briefing cache: only recompute once per day or on explicit refresh ──
+    today = st.session_state.get("_briefing_date", "")
+    actual_today = datetime.now().strftime("%Y-%m-%d")
+    if "_briefing" not in st.session_state or today != actual_today:
+        st.session_state["_briefing"] = None
+        st.session_state["_briefing_date"] = actual_today
 
     # ═══════════════════════════ Header ═══════════════════════════
     h1, h2 = st.columns([4, 1])
@@ -109,7 +119,8 @@ def dashboard_page() -> None:
     with h2:
         st.markdown('<div style="padding-top:12px;text-align:right">', unsafe_allow_html=True)
         if st.button("🚪 切换用户", key="header_logout"):
-            st.session_state.clear()
+            st.session_state.pop("user", None)
+            st.session_state.pop("_briefing", None)
             st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
 
@@ -117,9 +128,21 @@ def dashboard_page() -> None:
 
     # ═══════════════════════════ AI Briefing ═══════════════════════════
     if st.session_state.get("show_briefing", True):
-        with st.spinner("🤖 AI 正在分析您的今日工作..."):
-            briefing = pa_agent.daily_briefing(user["id"])
+        # Use cached briefing if available (avoids re-running AI on every page load)
+        if st.session_state["_briefing"] is None:
+            with st.spinner("🤖 AI 正在分析您的今日工作..."):
+                st.session_state["_briefing"] = pa_agent.daily_briefing(user["id"])
+        briefing = st.session_state["_briefing"]
         td = briefing["task_summary"]
+
+        # Live counts (not cached, always fresh)
+        live_notif_unread = get_unread_notif_count(user["id"])
+        conn = get_connection()
+        live_pending_approvals = conn.execute(
+            "SELECT COUNT(*) FROM approvals WHERE current_approver_id = ? AND status = 'pending'",
+            (user["id"],),
+        ).fetchone()[0]
+        conn.close()
 
         # Briefing metric cards
         mc1, mc2, mc3, mc4, mc5 = st.columns(5)
@@ -130,13 +153,13 @@ def dashboard_page() -> None:
         with mc2:
             metric_card("今日日程", len(briefing["meetings_today"]), color="#0EA5E9")
         with mc3:
-            metric_card("未读通知", briefing["notifications"]["unread_count"], color="#F59E0B")
-            if briefing["notifications"]["unread_count"] > 0:
+            metric_card("未读通知", live_notif_unread, color="#F59E0B")
+            if live_notif_unread > 0:
                 if st.button("查看", key="view_notifs_top", use_container_width=True):
                     st.session_state["show_notif_panel"] = True
                     st.rerun()
         with mc4:
-            metric_card("待审批", briefing["pending_approvals"], color="#10B981")
+            metric_card("待审批", live_pending_approvals, color="#10B981")
         with mc5:
             att = briefing.get("attendance")
             label = "已签到" if att and att.get("check_in") else "未签到"
@@ -207,10 +230,14 @@ def dashboard_page() -> None:
             for c in briefing["conflicts"]:
                 st.warning(f"⚠️ {c['message']}")
 
-        c1, _ = st.columns([1, 10])
+        c1, c2, _ = st.columns([1, 1, 9])
         with c1:
             if st.button("收起简报", key="hide_briefing", use_container_width=True):
                 st.session_state["show_briefing"] = False
+                st.rerun()
+        with c2:
+            if st.button("🔄 刷新", key="refresh_briefing", use_container_width=True):
+                st.session_state["_briefing"] = None
                 st.rerun()
     else:
         if st.button("🤖 展开 AI 简报", key="show_briefing_btn"):

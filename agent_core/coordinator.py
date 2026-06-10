@@ -14,6 +14,7 @@ from .tool_registry import ToolRegistry
 from .tools.task_tools import register_task_tools
 from .tools.kb_tools import register_kb_tools
 from .tools.calendar_tools import register_calendar_tools
+from .tools.announcement_tools import register_announcement_tools
 from .tools.general_tools import (
     register_notification_tools,
     register_message_tools,
@@ -34,6 +35,7 @@ def build_registry() -> ToolRegistry:
         + register_message_tools()
         + register_attendance_tools()
         + register_approval_tools()
+        + register_announcement_tools()
         + register_user_tools()
     )
     for tool in all_tools:
@@ -168,7 +170,8 @@ class CoordinatorAgent:
 
         routing_prompt = (
             "你是请求路由智能体。分析用户请求，判断需要哪些领域的智能体来处理。\n"
-            "可用领域：task(任务管理), calendar(日程安排), knowledge(知识库), approval(审批), general(通用)\n\n"
+            "可用领域：task(任务管理), calendar(日程安排), knowledge(知识库), approval(审批), "
+            "announcement(公告通知), general(通用)\n\n"
             "返回 JSON 格式：\n"
             '{"domains": ["task"], "reasoning": "用户想创建任务", '
             '"subtasks": [{"domain": "task", "prompt": "创建一个任务...", "depends_on": []}]}\n\n'

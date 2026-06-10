@@ -62,6 +62,12 @@ def _get_task_detail(task_id: int, **_: Any) -> str:
     }, ensure_ascii=False)
 
 
+def _delete_task(task_id: int, **_: Any) -> str:
+    from tasks import delete_task
+    ok = delete_task(task_id)
+    return json.dumps({"success": ok, "message": f"任务 {task_id} 已删除" if ok else "删除失败"}, ensure_ascii=False)
+
+
 def register_task_tools() -> list[ToolDef]:
     return [
         ToolDef(
@@ -125,6 +131,19 @@ def register_task_tools() -> list[ToolDef]:
                 "required": ["task_id"],
             },
             handler=_get_task_detail,
+            domain="task",
+        ),
+        ToolDef(
+            name="delete_task",
+            description="删除一个任务。",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "integer", "description": "任务ID"},
+                },
+                "required": ["task_id"],
+            },
+            handler=_delete_task,
             domain="task",
         ),
     ]

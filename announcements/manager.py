@@ -14,9 +14,17 @@ def create_announcement(title: str, content: str, author_id: int, *, is_pinned: 
         "INSERT INTO announcements (title, content, author_id, is_pinned) VALUES (?, ?, ?, ?)",
         (title, content, author_id, 1 if is_pinned else 0),
     )
+    ann_id = cur.lastrowid
+    # Notify all users about new announcement
+    users = conn.execute("SELECT id FROM users").fetchall()
+    for u in users:
+        conn.execute(
+            "INSERT INTO notifications (user_id, type, title, message) VALUES (?, 'system', ?, ?)",
+            (u["id"], f"📢 新公告：{title}", content[:200]),
+        )
     conn.commit()
     conn.close()
-    return cur.lastrowid
+    return ann_id
 
 
 def update_announcement(ann_id: int, **fields: Any) -> bool:
